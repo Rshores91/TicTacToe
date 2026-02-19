@@ -11,6 +11,16 @@ static int current_player = 0;
 static bool game_finished = false;
 
 
+void print_board_locked(void) {
+    printf("\n");
+    for (int r = 0; r < 3; r++) {
+        printf(" %c | %c | %c \n", board[r][0], board[r][1], board[r][2]);
+        if (r < 2) {
+            printf("---|---|---\n");
+        }
+    }
+}
+
 
 void *player_thread(void *arg) {
     int player = *(int *)arg;
@@ -52,14 +62,15 @@ void *player_thread(void *arg) {
 
             placed = 1; // Move placed successfully
             
+            char mark = (player == 0) ? 'O' : 'X';
+    
             if (placed) {
-                if (won_now || board_full) game_finished = true; // Set game finished if there's a win or draw
+                won_now = check_winner(mark); // Check if the current player has won
+                board_full = board_is_full(); // Check if the board is full
+                if(won_now || board_full) {
+                    game_finished = true; // Set game finished if there's a winner or the board is full
+                }
             }
-
-        } else {
-            pthread_mutex_unlock(&lock); // Unlock before retrying
-            continue;
-        }
 
         }
 
@@ -68,6 +79,7 @@ void *player_thread(void *arg) {
         pthread_mutex_unlock(&lock);
     }
     return NULL;
+}
 }
 
 void init_board(void) {
