@@ -10,9 +10,16 @@ static pthread_cond_t turn_cv = PTHREAD_COND_INITIALIZER;
 static int current_player = 0;
 static bool game_finished = false;
 
+
+
 void *player_thread(void *arg) {
     int player = *(int *)arg;
     while (true) {
+
+        int placed = 0; // Flag to indicate if the move was placed successfully
+        bool won_now = false; // Placeholder for win condition check
+        bool board_full = false; // Placeholder for board full check
+
         pthread_mutex_lock(&lock); // Lock the mutex to check the game state and wait for the turn
         while (current_player != player && !game_finished) { //
             pthread_cond_wait(&turn_cv, &lock); // Wait for the turn or game to finish
@@ -25,8 +32,11 @@ void *player_thread(void *arg) {
         // TODO: get move, validate, update board
         printf("Player %d's turn\n", player);
 
+        
         int move = 0;
 
+
+        for (int tries = 0; tries < 9 && !placed; tries++) {
         move = rand() % 9; // Random move for demonstration
         int row = move / 3; // Calculate row from the move index
         int col = move % 3; // Calculate column from the move index
@@ -40,9 +50,17 @@ void *player_thread(void *arg) {
                 printf("Player 1 places marker at (%d, %d)\n", row, col);
             }
 
+            placed = 1; // Move placed successfully
+            
+            if (placed) {
+                if (won_now || board_full) game_finished = true; // Set game finished if there's a win or draw
+            }
+
         } else {
             pthread_mutex_unlock(&lock); // Unlock before retrying
             continue;
+        }
+
         }
 
         current_player = 1 - current_player; // Switch to the other player
