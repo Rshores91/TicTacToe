@@ -1,24 +1,35 @@
-#include <pthread.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <time.h>
+#include <pthread.h> // For threading and synchronization primitives
+#include <stdio.h> // For printf()
+#include <stdlib.h> // For rand() and srand()
+#include <stdbool.h> // For boolean type
+#include <time.h> // For time-based seeding of the random number generator
+#include <windows.h> // For GetTickCount on Windows
+#include <stdint.h>
 
 static char board[3][3]; // Game board
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t turn_cv = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER; // Mutex to protect shared game state (board, current_player, game_finished)
+static pthread_cond_t turn_cv = PTHREAD_COND_INITIALIZER; // pthread condition variable to signal turns between players
 static int current_player = 0; // shared turn state: 0 for player 0, 1 for player 1
-static bool game_finished = false;
-bool check_winner(char mark);
-bool board_is_full(void);
+static bool game_finished = false; // shared game state to indicate if the game has finished (either by win or draw)
+bool check_winner(char mark); // Function prototype for checking if a player has won
+bool board_is_full(void); // Function prototypes for checking win conditions and board state
+
+static unsigned int next_random(unsigned int *state) {
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
 
 
-void print_board_locked(void) { 
+void print_board_locked(void) {  // Function to print the current state of the board, assumes the caller has already locked the mutex
     printf("\n");
     for (int r = 0; r < 3; r++) {
         printf(" %c | %c | %c \n", board[r][0], board[r][1], board[r][2]);
         if (r < 2) {
-            printf("---|---|---");
+            printf("---|---|---\n");
         }
     }
 }
@@ -26,7 +37,7 @@ void print_board_locked(void) {
 
 
 
-bool board_is_full(void) {
+bool board_is_full(void) { // Function to check if the board is full (no empty spaces), assumes the caller has already locked the mutex
     for (int r=0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
             if (board[r][c] == ' ') {
@@ -39,7 +50,7 @@ bool board_is_full(void) {
 
 
 
-bool check_winner(char mark) {
+bool check_winner(char mark) { // Function to check if the given mark ('X' or 'O') has won the game, assumes the caller has already locked the mutex
     for (int i = 0; i < 3; i++) {
         if (board[i][0] == mark && board[i][1] == mark && board[i][2] == mark) {
             return true; // Row win
@@ -61,7 +72,18 @@ bool check_winner(char mark) {
 
 void *player_thread(void *arg) { // Thread function for each player: works by passing the player number as an argument to the thread, which then uses it to determine its mark and when to play. The thread will loop until the game is finished, checking for its turn and making moves accordingly.
     int player = *(int *)arg; // Get player number from argument
-    char mark = (player == 0) ? 'X' : 'O'; // Assign mark based on player number
+    char mark = (player == 1) ? 'X' : 'O'; // Assign mark based on player number
+    unsigned int seed = (unsigned int)time(NULL)
+                      ^ (unsigned int)clock()
+                      ^ (unsigned int)(player * 2654435761u)
+                      ^ (unsigned int)(uintptr_t)&player
+                      ^ (unsigned int)GetTickCount()
+                      ^ (unsigned int)GetCurrentThreadId();
+
+    if (seed == 0u) {
+        seed = 2463534242u;
+    }
+
     while (true) {
 
         int placed = 0; // Flag to indicate if the move was placed successfully
@@ -72,46 +94,64 @@ void *player_thread(void *arg) { // Thread function for each player: works by pa
         pthread_mutex_lock(&lock); // Lock the mutex to check the game state and wait for the turn
         while (current_player != player && !game_finished) { //
             pthread_cond_wait(&turn_cv, &lock); // Wait for the turn or game to finish
-        }
+        } // end of turn wait loop
         if (game_finished) {
             pthread_mutex_unlock(&lock); // Unlock before exiting
             break;
-        }
+        } // end of game finished loop
 
 
         // TODO: get move, validate, update board
         printf("Player %d's turn\n", player);
 
         
-        int move = 0;
 
+        int empties[9];
+        int empty_count = 0;
 
-        for (int tries = 0; tries < 9 && !placed; tries++) {
-        move = rand() % 9; // Random move for demonstration
-        int row = move / 3; // Calculate row from the move index
-        int col = move % 3; // Calculate column from the move index
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+                if (board[r][c] == ' ') {
+                    empties[empty_count++] = r * 3 + c;  // store cell index 0..8
+                }
+            }
+        } // end of loop to find empty cells
 
+        if (empty_count == 0) {
+            game_finished = true;  // tie
+        } else {
+            int pick = (int)(next_random(&seed) % (unsigned)empty_count);
+            int move = empties[pick];
+            int row = move / 3;
+            int col = move % 3;
 
-        // char mark = (player == 0) ? 'X' : 'O';   // or swap if you want player 0 = O
-
-        if (board[row][col] == ' ') {
             board[row][col] = mark;
             printf("Player %d places %c at (%d, %d)\n", player, mark, row, col);
-            placed = 1;
             print_board_locked();
-}
+            placed = 1; // Mark the move as placed
 
-        placed = 1; // Move placed successfully
-            
+        } // end of move selection and placement
 
-        } // End of move validation loop
+
+        if (!placed) {
+            printf("Player %d failed to place a move after 9 tries. Ending game.\n", player);
+            game_finished = true; // If no valid move was placed after 9 tries, end the game (should not happen in a normal game)
+        }
 
         
         if (placed) {
         won_now = check_winner(mark); // Check if the current player has won
         board_full = board_is_full(); // Check if the board is full
             if(won_now || board_full) {
+                if (won_now) {
+                    printf("Player %d wins!\n", player);
+                } else {
+                    printf("The game is a draw!\n");
+                }
             game_finished = true; // Set game finished if there's a winner or the board is full
+            pthread_cond_broadcast(&turn_cv); // Wake up the other player to let them know the game is finished
+            pthread_mutex_unlock(&lock); // Unlock before exiting
+
             }
         }
 
@@ -127,10 +167,10 @@ void *player_thread(void *arg) { // Thread function for each player: works by pa
 
 
 
-void init_board(void) {
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) {
-            board[r][c] = ' ';
+void init_board(void) { // Function to initialize the game board to empty spaces
+    for (int r = 0; r < 3; r++) { // Loop through each row
+        for (int c = 0; c < 3; c++) { // Loop through each column in the current row
+            board[r][c] = ' '; // Set the cell to a space character to indicate it's empty
         }
     }
 }
@@ -138,7 +178,6 @@ void init_board(void) {
 
 
 int main(void) {
-    srand((unsigned)time(NULL));
     init_board();
 
     pthread_t t1, t2;
